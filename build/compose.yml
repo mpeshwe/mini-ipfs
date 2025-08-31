@@ -1,0 +1,98 @@
+# version: "3.8"
+
+services:
+  node1:
+    build:
+      context: ..
+      dockerfile: build/Dockerfile
+    image: mini-ipfs:dev
+    container_name: mini-ipfs-node1
+    environment:
+      - MINI_IPFS_NODE_ID=node1
+      - MINI_IPFS_NODE_HTTP_ADDR=:8080
+      - MINI_IPFS_NODE_DHT_ADDR=:7000
+      - MINI_IPFS_NODE_DATA_DIR=/data
+      - MINI_IPFS_LOGGING_LEVEL=info
+      - MINI_IPFS_LOGGING_FORMAT=json
+      - MINI_IPFS_DHT_K=20
+      - MINI_IPFS_DHT_ALPHA=3
+    ports:
+      - "8081:8080"  # HTTP API accessible at localhost:8081
+      - "7001:7000"  # DHT port
+    volumes:
+      - node1-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  node2:
+    build:
+      context: ..
+      dockerfile: build/Dockerfile
+    image: mini-ipfs:dev
+    container_name: mini-ipfs-node2
+    environment:
+      - MINI_IPFS_NODE_ID=node2
+      - MINI_IPFS_NODE_HTTP_ADDR=:8080
+      - MINI_IPFS_NODE_DHT_ADDR=:7000
+      - MINI_IPFS_NODE_DATA_DIR=/data
+      - MINI_IPFS_LOGGING_LEVEL=info
+      - MINI_IPFS_LOGGING_FORMAT=json
+      - MINI_IPFS_DHT_K=20
+      - MINI_IPFS_DHT_ALPHA=3
+      - MINI_IPFS_DHT_BOOTSTRAP_NODES=node1:7000
+    ports:
+      - "8082:8080"  # HTTP API accessible at localhost:8082
+      - "7002:7000"  # DHT port
+    volumes:
+      - node2-data:/data
+    depends_on:
+      node1:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 50s
+
+  node3:
+    build:
+      context: ..
+      dockerfile: build/Dockerfile
+    image: mini-ipfs:dev
+    container_name: mini-ipfs-node3
+    environment:
+      - MINI_IPFS_NODE_ID=node3
+      - MINI_IPFS_NODE_HTTP_ADDR=:8080
+      - MINI_IPFS_NODE_DHT_ADDR=:7000
+      - MINI_IPFS_NODE_DATA_DIR=/data
+      - MINI_IPFS_LOGGING_LEVEL=info
+      - MINI_IPFS_LOGGING_FORMAT=json
+      - MINI_IPFS_DHT_K=20
+      - MINI_IPFS_DHT_ALPHA=3
+      - MINI_IPFS_DHT_BOOTSTRAP_NODES=node1:7000,node2:7000
+    ports:
+      - "8083:8080"  # HTTP API accessible at localhost:8083
+      - "7003:7000"  # DHT port
+    volumes:
+      - node3-data:/data
+    depends_on:
+      node1:
+        condition: service_started
+      node2:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:

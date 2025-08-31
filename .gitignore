@@ -1,0 +1,12 @@
+bin/
+*.out
+*.test
+coverage.*
+.env
+**/.env
+dist/
+build/cache/
+.DS_Store
+.idea/
+.vscode/
+node_modules/
