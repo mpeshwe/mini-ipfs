@@ -13,7 +13,8 @@ Highlights
 
 Status
 - Working: chunk store, provider announce, provider lookup + network fetch with integrity verification, local caching on fetch.
-- Planned: file (multi-chunk) upload/download endpoints with manifests, live fetch provenance, minimal web UI to demo multi-node fetch.
+- File upload/download with manifests, per‑chunk caching, and provider announce on cache.
+- Live events (SSE) + web UI: uploads, fetches, deletes, and DHT RPC activity between nodes.
 
 Architecture (quick tour)
 - internal/storage
@@ -92,6 +93,11 @@ printf 'Hello distributed world!' | diff -q /tmp/out3 - || echo "mismatch"
 curl -i "http://127.0.0.1:8081/api/v1/chunk/$HASH" | head -n1
 ```
 
+5) Delete a single chunk everywhere
+```
+curl -s -X DELETE "http://127.0.0.1:8081/api/v1/chunk/$HASH?global=1" | jq .
+```
+
 Docker Compose (multi-node demo)
 1) Build image and start the cluster
 ```
@@ -121,13 +127,20 @@ printf 'Hello distributed world!' | diff -q /tmp/out3 - || echo "mismatch"
 ```
 
 HTTP API
-- `GET /health` – service health + storage stats
+- `GET|HEAD /health` – service health + storage stats
 - `GET /api/v1/status` – node configuration snapshot & storage stats
 - `POST /api/v1/chunk` – store raw chunk (request body as bytes)
   - Response: `{ "hash": "<sha256>", "size": <int> }`
 - `GET /api/v1/chunk/{hash}` – get chunk by hash (hex)
   - Query: `remote=1` to allow searching the network via DHT + HTTP
-  - Response: `200 application/octet-stream` on success; `404` if not found locally (without `remote=1`)
+  - Response: `200` if found; `404` if not found locally and `remote` not enabled
+- `DELETE /api/v1/chunk/{hash}` – delete a chunk locally; with `global=1` propagates delete to other providers via DHT
+- `POST /api/v1/file` – store whole file; returns manifest hash
+- `POST /api/v1/file/stream` – stream upload; returns manifest hash
+- `GET /api/v1/file/{manifest}` – fetch and reconstruct file
+  - Query: `remote=1` to permit network lookups for manifest and chunks
+- `DELETE /api/v1/file/{manifest}` – delete manifest and chunks; with `remote=1&global=1` also deletes on other providers (manifest and per‑chunk)
+- `GET /api/v1/events` – Server‑Sent Events (SSE) stream with activity
 
 Configuration
 Configuration is loaded via environment variables with the `MINI_IPFS_` prefix. Defaults are set in code.
@@ -153,12 +166,23 @@ Key settings
 Notes
 - DHT identity derives from `NODE_ID` (or falls back to bind address). Ensure each node has a distinct `NODE_ID`.
 - Nodes advertise a reachable DHT address using `NODE_ADVERTISE_HOST`; in Docker Compose this is the service name (already wired in `build/compose.yml`).
-- When a node fetches a chunk via the network, it caches it locally; subsequent GETs (without `?remote=1`) return 200 from cache.
+- When a node fetches a chunk via the network, it caches it locally; subsequent GETs (without `?remote=1`) return 200 from cache. On cache, the node also announces itself as a provider.
+- Deletion semantics: deleting a file with `?remote=1&global=1` deletes local chunks and manifest, then propagates delete to all manifest providers and chunk providers discovered via the DHT. Deleting a single chunk with `?global=1` asks other chunk providers to delete as well.
 
 Roadmap
-- File endpoints (`/api/v1/file`): chunk whole files, store a manifest, reconstruct on fetch.
-- “Announce on cache”: make fetched+cached nodes become providers automatically (configurable).
-- Simple web UI: upload a file, fetch by manifest hash, and visualize chunk provenance (which nodes served which chunks).
+- Garbage collection helpers for orphaned chunks.
+- Rate limiting and auth on HTTP API.
+- More detailed UI stats and per‑node counters.
+
+Web UI
+- Location: `mini-ipfs-ui/`
+- Run: `cd mini-ipfs-ui && npm i && npm run dev`
+- Node base URLs (compose defaults):
+  - node1 → http://localhost:8081
+  - node2 → http://localhost:8082
+  - node3 → http://localhost:8083
+- Override via env when starting Vite: `VITE_NODE1_BASE=... VITE_NODE2_BASE=... VITE_NODE3_BASE=...`
+- Live Activity shows uploads, fetches, deletions, caches, and DHT RPC traffic (pings, find_node, find_providers, store_provider) between nodes.
 
 Troubleshooting
 - Port in use: change `HTTP_ADDR`/`DHT_ADDR` or stop the other process.

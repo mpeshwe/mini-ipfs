@@ -144,6 +144,10 @@ func (c *Chunker) ReconstructData(chunks [][]byte, manifest *FileManifest) ([]by
 	return data, nil
 }
 
+func (c *Chunker) GetChunkSize() int64 {
+	return c.chunkSize
+}
+
 // Helper functions
 func getCurrentTimestamp() int64 {
 	// In a real implementation, you'd use time.Now().Unix()

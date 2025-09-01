@@ -86,6 +86,9 @@ type Node interface {
 	ID() []byte
 	Address() string
 	RoutingTable() RoutingTable
+
+	// Observability: optional sink for emitting node-level events (e.g., RPC activity)
+	SetEventSink(func(event string, payload map[string]interface{}))
 }
 
 // RPC message structure for node-to-node communication

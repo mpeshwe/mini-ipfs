@@ -114,16 +114,30 @@ func (s *RPCServer) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		var msg RPCMessage
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			s.logger.Error("Failed to parse RPC message", zap.Error(err))
-			continue
-		}
+        var msg RPCMessage
+        if err := json.Unmarshal([]byte(line), &msg); err != nil {
+            s.logger.Error("Failed to parse RPC message", zap.Error(err))
+            continue
+        }
 
-		s.logger.Debug("Received RPC message",
-			zap.String("type", msg.Type),
-			zap.String("from", fmt.Sprintf("%x", msg.Sender.Id[:8])),
-		)
+        s.logger.Debug("Received RPC message",
+            zap.String("type", msg.Type),
+            zap.String("from", fmt.Sprintf("%x", msg.Sender.Id[:8])),
+        )
+
+        // Emit inbound RPC event for UI visibility
+        if s.node != nil {
+            switch msg.Type {
+            case MessageTypePing:
+                s.node.emitEvent("rpc_ping_in", map[string]interface{}{"from": conn.RemoteAddr().String()})
+            case MessageTypeFindNode:
+                s.node.emitEvent("rpc_find_node_in", map[string]interface{}{"from": conn.RemoteAddr().String()})
+            case MessageTypeFindProviders:
+                s.node.emitEvent("rpc_find_providers_in", map[string]interface{}{"from": conn.RemoteAddr().String()})
+            case MessageTypeStoreProvider:
+                s.node.emitEvent("rpc_store_provider_in", map[string]interface{}{"from": conn.RemoteAddr().String()})
+            }
+        }
 
 		// Update routing table with sender info
 		s.node.routing.InsertNode(msg.Sender)

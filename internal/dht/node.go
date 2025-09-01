@@ -17,17 +17,19 @@ import (
 
 // dhtNode implements the Node interface
 type dhtNode struct {
-	nodeInfo  *NodeInfo
-	config    *util.Config
-	logger    *zap.Logger
-	routing   RoutingTable
-	rpcServer *RPCServer
-	rpcClient *RPCClient
-	requestID uint64
-	idMutex   sync.Mutex
+    nodeInfo  *NodeInfo
+    config    *util.Config
+    logger    *zap.Logger
+    routing   RoutingTable
+    rpcServer *RPCServer
+    rpcClient *RPCClient
+    requestID uint64
+    idMutex   sync.Mutex
 
-	providers    map[string][]*NodeInfo
-	providersMux sync.RWMutex
+    providers    map[string][]*NodeInfo
+    providersMux sync.RWMutex
+    // Optional event sink for UI/observability
+    emit func(event string, payload map[string]interface{})
 }
 
 // NewNode creates a new DHT node
@@ -190,7 +192,22 @@ func (n *dhtNode) Address() string {
 
 // RoutingTable returns the node's routing table
 func (n *dhtNode) RoutingTable() RoutingTable {
-	return n.routing
+    return n.routing
+}
+
+// SetEventSink registers a callback to emit node-level events
+func (n *dhtNode) SetEventSink(f func(event string, payload map[string]interface{})) {
+    n.emit = f
+}
+
+func (n *dhtNode) emitEvent(event string, payload map[string]interface{}) {
+    if n.emit == nil {
+        return
+    }
+    if payload == nil {
+        payload = map[string]interface{}{}
+    }
+    n.emit(event, payload)
 }
 
 // DHT Operations - now with real network implementation
@@ -204,10 +221,12 @@ func (n *dhtNode) Ping(addr string) error {
 		Payload: PingRequest{},
 	}
 
-	response, err := n.rpcClient.SendMessage(addr, msg)
-	if err != nil {
-		return fmt.Errorf("ping failed to %s: %w", addr, err)
-	}
+    n.emitEvent("rpc_ping_out", map[string]interface{}{"to": addr})
+    response, err := n.rpcClient.SendMessage(addr, msg)
+    if err != nil {
+        n.emitEvent("rpc_ping_err", map[string]interface{}{"to": addr, "error": err.Error()})
+        return fmt.Errorf("ping failed to %s: %w", addr, err)
+    }
 
 	if response.Type != MessageTypePong {
 		return fmt.Errorf("unexpected response type: %s", response.Type)
@@ -216,9 +235,11 @@ func (n *dhtNode) Ping(addr string) error {
 	// Add responding node to routing table
 	n.routing.InsertNode(response.Sender)
 
-	n.logger.Debug("Ping successful",
-		zap.String("target", addr),
-		zap.String("responder", fmt.Sprintf("%x", response.Sender.Id[:8])))
+    n.logger.Debug("Ping successful",
+        zap.String("target", addr),
+        zap.String("responder", fmt.Sprintf("%x", response.Sender.Id[:8])))
+
+    n.emitEvent("rpc_ping_ok", map[string]interface{}{"to": addr, "peer": fmt.Sprintf("%x", response.Sender.Id[:8])})
 
 	return nil
 }
@@ -314,10 +335,12 @@ func (n *dhtNode) findNodeSingle(target []byte, addr string) ([]*NodeInfo, error
 		},
 	}
 
-	response, err := n.rpcClient.SendMessage(addr, msg)
-	if err != nil {
-		return nil, err
-	}
+    n.emitEvent("rpc_find_node_out", map[string]interface{}{"to": addr})
+    response, err := n.rpcClient.SendMessage(addr, msg)
+    if err != nil {
+        n.emitEvent("rpc_find_node_err", map[string]interface{}{"to": addr, "error": err.Error()})
+        return nil, err
+    }
 
 	if response.Type != MessageTypeFindNodeResp {
 		return nil, fmt.Errorf("unexpected response type: %s", response.Type)
@@ -364,7 +387,8 @@ func (n *dhtNode) findNodeSingle(target []byte, addr string) ([]*NodeInfo, error
 		})
 	}
 
-	return nodes, nil
+    n.emitEvent("rpc_find_node_ok", map[string]interface{}{"to": addr, "count": len(nodes)})
+    return nodes, nil
 }
 
 // StoreProvider announces that a node provides content with given hash
@@ -443,16 +467,19 @@ func (n *dhtNode) storeProviderRemote(hash []byte, provider *NodeInfo, addr stri
 		},
 	}
 
-	response, err := n.rpcClient.SendMessage(addr, msg)
-	if err != nil {
-		return err
-	}
+    n.emitEvent("rpc_store_provider_out", map[string]interface{}{"to": addr, "hash": hex.EncodeToString(hash)})
+    response, err := n.rpcClient.SendMessage(addr, msg)
+    if err != nil {
+        n.emitEvent("rpc_store_provider_err", map[string]interface{}{"to": addr, "error": err.Error()})
+        return err
+    }
 
 	if response.Type != MessageTypeStoreResp {
 		return fmt.Errorf("unexpected response type: %s", response.Type)
 	}
 
-	return nil
+    n.emitEvent("rpc_store_provider_ok", map[string]interface{}{"to": addr})
+    return nil
 }
 
 // func (n *dhtNode) FindProviders(hash []byte) ([]*NodeInfo, error) {
@@ -527,10 +554,12 @@ func (n *dhtNode) findProvidersRemote(hash []byte, addr string) ([]*NodeInfo, er
 		},
 	}
 
-	response, err := n.rpcClient.SendMessage(addr, msg)
-	if err != nil {
-		return nil, err
-	}
+    n.emitEvent("rpc_find_providers_out", map[string]interface{}{"to": addr})
+    response, err := n.rpcClient.SendMessage(addr, msg)
+    if err != nil {
+        n.emitEvent("rpc_find_providers_err", map[string]interface{}{"to": addr, "error": err.Error()})
+        return nil, err
+    }
 	if response.Type != MessageTypeProvidersResp {
 		return nil, fmt.Errorf("unexpected response type: %s", response.Type)
 	}
@@ -573,7 +602,8 @@ func (n *dhtNode) findProvidersRemote(hash []byte, addr string) ([]*NodeInfo, er
 		})
 	}
 
-	return providers, nil
+    n.emitEvent("rpc_find_providers_ok", map[string]interface{}{"to": addr, "count": len(providers)})
+    return providers, nil
 }
 
 // FindProviders locates nodes that provide content with given hash
