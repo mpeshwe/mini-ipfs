@@ -1,0 +1,31 @@
+services:
+  node1:
+    hostname: node1
+    environment:
+      - MINI_IPFS_NODE_ADVERTISE_HOST=node1
+    ports:
+      - "8080:8080"   # HTTP
+      - "7000:7000"   # DHT
+    networks: [overlay]
+
+  node2:
+    hostname: node2
+    environment:
+      - MINI_IPFS_NODE_ADVERTISE_HOST=node2
+    ports:
+      - "8081:8080"   # map external 8081 -> internal 8080
+      - "7001:7000"   # map external 7001 -> internal 7000
+    networks: [overlay]
+
+  node3:
+    hostname: node3
+    environment:
+      - MINI_IPFS_NODE_ADVERTISE_HOST=node3
+    ports:
+      - "8082:8080"   # map external 8082 -> internal 8080
+      - "7002:7000"   # map external 7002 -> internal 7000
+    networks: [overlay]
+
+networks:
+  overlay:
+    driver: bridge

@@ -1,14 +1,22 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/mux"
 	"go.uber.org/zap"
 
+	"github.com/mpeshwe/mini-ipfs/internal/dht"
 	"github.com/mpeshwe/mini-ipfs/internal/storage"
 	"github.com/mpeshwe/mini-ipfs/internal/util"
 )
@@ -21,6 +29,7 @@ type Server struct {
 	config     *util.Config
 	chunkStore *storage.ChunkStore
 	chunker    *storage.Chunker
+	dhtNode    dht.Node
 }
 
 // HealthResponse represents the health check response
@@ -34,13 +43,14 @@ type HealthResponse struct {
 }
 
 // NewServer creates a new HTTP API server
-func NewServer(config *util.Config, logger *zap.Logger, chunkStore *storage.ChunkStore, chunker *storage.Chunker) *Server {
+func NewServer(config *util.Config, logger *zap.Logger, chunkStore *storage.ChunkStore, chunker *storage.Chunker, dhtNode dht.Node) *Server {
 	s := &Server{
 		router:     mux.NewRouter(),
 		logger:     logger.With(zap.String("component", "api")),
 		config:     config,
 		chunkStore: chunkStore,
 		chunker:    chunker,
+		dhtNode:    dhtNode,
 	}
 
 	s.setupRoutes()
@@ -59,13 +69,252 @@ func (s *Server) setupRoutes() {
 	api := s.router.PathPrefix("/api/v1").Subrouter()
 	api.HandleFunc("/status", s.handleStatus).Methods("GET")
 
-	// TODO Episode 4: Add chunk endpoints
-	// api.HandleFunc("/chunk", s.handlePostChunk).Methods("POST")
-	// api.HandleFunc("/chunk/{hash}", s.handleGetChunk).Methods("GET")
+	api.HandleFunc("/chunk", s.handlePostChunk).Methods("POST")
+	api.HandleFunc("/chunk/{hash}", s.handleGetChunk).Methods("GET")
 
 	// TODO Episode 6: Add file endpoints
 	// api.HandleFunc("/file", s.handlePostFile).Methods("POST")
 	// api.HandleFunc("/file/{hash}", s.handleGetFile).Methods("GET")
+}
+
+// ChunkResponse represents a chunk storage response
+type ChunkResponse struct {
+	Hash string `json:"hash"`
+	Size int    `json:"size"`
+}
+
+// handlePostChunk stores a chunk and returns its hash
+func (s *Server) handlePostChunk(w http.ResponseWriter, r *http.Request) {
+	// Limit request size to prevent abuse
+	maxSize := int64(10 * 1024 * 1024) // 10MB max
+	if r.ContentLength > maxSize {
+		http.Error(w, "Request too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	// Read request body
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxSize))
+	if err != nil {
+		s.logger.Error("Failed to read request body", zap.Error(err))
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	if len(body) == 0 {
+		http.Error(w, "Empty request body", http.StatusBadRequest)
+		return
+	}
+
+	// Store the chunk locally
+	hash, err := s.chunkStore.PutChunk(body)
+	if err != nil {
+		s.logger.Error("Failed to store chunk", zap.Error(err))
+		http.Error(w, "Failed to store chunk", http.StatusInternalServerError)
+		return
+	}
+
+	// Build advertised HTTP address (reachable by peers)
+	httpAddr, err := s.advertisedHTTPAddr()
+	if err != nil {
+		s.logger.Warn("no advertised HTTP addr", zap.Error(err))
+	}
+
+	// Announce to DHT that we provide this chunk
+	nodeInfo := &dht.NodeInfo{
+		Id:   s.dhtNode.ID(),
+		Addr: s.dhtNode.Address(), // DHT contact address (do NOT overwrite with HTTP)
+		HTTP: httpAddr,            // Optional: explicit HTTP address for fetching
+	}
+
+	// Announce provider in background (don't block HTTP response)
+	go func() {
+		if err := s.dhtNode.StoreProvider(hash, nodeInfo); err != nil {
+			s.logger.Warn("Failed to announce provider to DHT",
+				zap.String("hash", hex.EncodeToString(hash)[:16]),
+				zap.Error(err))
+		} else {
+			s.logger.Debug("Announced chunk provider to DHT",
+				zap.String("hash", hex.EncodeToString(hash)[:16]))
+		}
+	}()
+
+	// Return response immediately
+	response := ChunkResponse{
+		Hash: hex.EncodeToString(hash),
+		Size: len(body),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(response)
+
+	s.logger.Info("Stored chunk",
+		zap.String("hash", hex.EncodeToString(hash)[:16]),
+		zap.Int("size", len(body)))
+}
+
+// handleGetChunk retrieves a chunk by its hash (local or remote)
+func (s *Server) handleGetChunk(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	hashHex := vars["hash"]
+
+	if len(hashHex) != 64 {
+		http.Error(w, "Invalid hash format", http.StatusBadRequest)
+		return
+	}
+
+	// Decode hex hash
+	hash, err := hex.DecodeString(hashHex)
+	if err != nil {
+		http.Error(w, "Invalid hash format", http.StatusBadRequest)
+		return
+	}
+
+	// Try to retrieve chunk locally first
+	data, err := s.chunkStore.GetChunk(hash)
+	if err == nil {
+		// Found locally - return immediately
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+
+		s.logger.Debug("Retrieved chunk locally",
+			zap.String("hash", hashHex[:16]),
+			zap.Int("size", len(data)))
+		return
+	}
+
+	// Chunk not found locally - check if remote fetching is enabled
+	enableRemote := r.URL.Query().Get("remote")
+	if enableRemote != "1" && enableRemote != "true" {
+		http.Error(w, "Chunk not found locally (use ?remote=1 to search network)", http.StatusNotFound)
+		return
+	}
+
+	s.logger.Info("Chunk not found locally, searching network",
+		zap.String("hash", hashHex[:16]))
+
+	// Fetch chunk from network
+	data, err = s.fetchChunkFromNetwork(hash, hashHex)
+	if err != nil {
+		s.logger.Warn("Failed to fetch chunk from network",
+			zap.String("hash", hashHex[:16]),
+			zap.Error(err))
+		http.Error(w, "Chunk not found in network", http.StatusNotFound)
+		return
+	}
+
+	// Store chunk locally (caching)
+	if _, storeErr := s.chunkStore.PutChunk(data); storeErr != nil {
+		s.logger.Warn("Failed to cache retrieved chunk",
+			zap.String("hash", hashHex[:16]),
+			zap.Error(storeErr))
+	}
+
+	// Return chunk data
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+
+	s.logger.Info("Retrieved chunk from network",
+		zap.String("hash", hashHex[:16]),
+		zap.Int("size", len(data)))
+}
+
+// fetchChunkFromNetwork attempts to retrieve a chunk from other nodes
+func (s *Server) fetchChunkFromNetwork(hash []byte, hashHex string) ([]byte, error) {
+	// Find providers for this chunk
+	providers, err := s.dhtNode.FindProviders(hash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find providers: %w", err)
+	}
+
+	if len(providers) == 0 {
+		return nil, fmt.Errorf("no providers found for chunk")
+	}
+
+	s.logger.Debug("Found chunk providers",
+		zap.String("hash", hashHex[:16]),
+		zap.Int("provider_count", len(providers)))
+
+	// Try each provider until successful
+	for _, provider := range providers {
+		// Prefer explicit HTTP address if provider announced it
+		if provider.HTTP != "" {
+			data, err := s.fetchChunkFromHTTP(provider.HTTP, hashHex)
+			if err != nil {
+				s.logger.Debug("Failed over HTTP from provider",
+					zap.String("http", provider.HTTP),
+					zap.Error(err))
+				continue
+			}
+			// Verify chunk integrity
+			actualHash := sha256.Sum256(data)
+			if !bytes.Equal(hash, actualHash[:]) {
+				s.logger.Warn("Chunk integrity check failed from provider (HTTP)",
+					zap.String("http", provider.HTTP))
+				continue
+			}
+			return data, nil
+		}
+
+		// Fallback: derive HTTP from DHT address host
+		host, _, err := net.SplitHostPort(provider.Addr)
+		if err != nil || host == "" {
+			s.logger.Debug("bad provider addr", zap.String("addr", provider.Addr), zap.Error(err))
+			continue
+		}
+		httpAddr := net.JoinHostPort(host, "8080")
+		data, err := s.fetchChunkFromHTTP(httpAddr, hashHex)
+		if err != nil {
+			s.logger.Debug("Failed to fetch from provider",
+				zap.String("dht_addr", provider.Addr),
+				zap.String("http", httpAddr),
+				zap.Error(err))
+			continue
+		}
+
+		// Verify chunk integrity
+		actualHash := sha256.Sum256(data)
+		if !bytes.Equal(hash, actualHash[:]) {
+			s.logger.Warn("Chunk integrity check failed from provider",
+				zap.String("provider", provider.Addr))
+			continue
+		}
+
+		return data, nil
+	}
+
+	return nil, fmt.Errorf("failed to fetch chunk from any provider")
+}
+
+// fetchChunkFromHTTP retrieves a chunk from a specific HTTP address (host:port)
+func (s *Server) fetchChunkFromHTTP(httpAddr, hashHex string) ([]byte, error) {
+	url := fmt.Sprintf("http://%s/api/v1/chunk/%s", httpAddr, hashHex)
+
+	s.logger.Debug("Fetching chunk from provider",
+		zap.String("http_url", url),
+		zap.String("hash", hashHex[:16]))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP status %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	return data, nil
 }
 
 // setupMiddleware adds logging and CORS middleware
@@ -118,7 +367,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -129,11 +378,13 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"node_id": s.config.Node.ID,
 		"message": "Mini-IPFS node is running",
 		"endpoints": map[string]string{
-			"health": "/health",
-			"status": "/api/v1/status",
+			"health":     "/health",
+			"status":     "/api/v1/status",
+			"post_chunk": "POST /api/v1/chunk",
+			"get_chunk":  "GET /api/v1/chunk/{hash}",
 		},
 	}
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -155,7 +406,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // Middleware
@@ -203,4 +454,16 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// advertisedHTTPAddr builds a reachable HTTP address to advertise to peers.
+func (s *Server) advertisedHTTPAddr() (string, error) {
+	if s.config.Node.AdvertiseHost == "" {
+		return "", fmt.Errorf("node.advertise_host not set")
+	}
+	_, port, err := net.SplitHostPort(s.config.Node.HTTPAddr)
+	if err != nil {
+		return "", err
+	}
+	return net.JoinHostPort(s.config.Node.AdvertiseHost, port), nil
 }

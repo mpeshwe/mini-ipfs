@@ -18,10 +18,11 @@ type Config struct {
 }
 
 type NodeConfig struct {
-	ID       string `mapstructure:"id"`
-	HTTPAddr string `mapstructure:"http_addr"`
-	DHTAddr  string `mapstructure:"dht_addr"`
-	DataDir  string `mapstructure:"data_dir"`
+	ID            string `mapstructure:"id"`
+	HTTPAddr      string `mapstructure:"http_addr"`
+	DHTAddr       string `mapstructure:"dht_addr"`
+	DataDir       string `mapstructure:"data_dir"`
+	AdvertiseHost string `mapstructure:"advertise_host"`
 }
 
 type DHTConfig struct {
@@ -108,4 +109,6 @@ func setDefaults() {
 	// Logging defaults
 	viper.SetDefault("logging.level", "info")
 	viper.SetDefault("logging.format", "json")
+
+	viper.SetDefault("node.advertise_host", "")
 }

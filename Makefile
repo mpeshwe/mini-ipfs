@@ -56,5 +56,5 @@ compose-down: ## Stop Docker Compose network
 	docker-compose -f $(COMPOSE_FILE) down -v
 compose-reup:
 	docker compose -f build/compose.yml down --volumes --remove-orphans
-	docker compose --progress=plain -f build/compose.yml build --no-cache
+	docker compose -f build/compose.yml build --no-cache
 	docker compose -f build/compose.yml up -d

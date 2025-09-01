@@ -64,9 +64,17 @@ func main() {
 		zap.Int64("chunk_size", config.Storage.ChunkSize))
 
 	// ----------------------------------------------------------------------------
-	// Start HTTP server ASAP so Docker healthcheck (/health) succeeds early
+	// Initialize DHT node first (needed by API server)
 	// ----------------------------------------------------------------------------
-	apiServer := api.NewServer(config, logger, chunkStore, chunker)
+	dhtNode, err := dht.NewNode(config, logger)
+	if err != nil {
+		logger.Fatal("Failed to create DHT node", zap.Error(err))
+	}
+
+	// ----------------------------------------------------------------------------
+	// Start HTTP server with DHT node reference
+	// ----------------------------------------------------------------------------
+	apiServer := api.NewServer(config, logger, chunkStore, chunker, dhtNode)
 	serverErrCh := make(chan error, 1)
 	go func() {
 		if err := apiServer.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -77,12 +85,8 @@ func main() {
 	}()
 
 	// ----------------------------------------------------------------------------
-	// Initialize and start DHT asynchronously (bootstrap can take time)
+	// Start DHT asynchronously (bootstrap can take time)
 	// ----------------------------------------------------------------------------
-	dhtNode, err := dht.NewNode(config, logger)
-	if err != nil {
-		logger.Fatal("Failed to create DHT node", zap.Error(err))
-	}
 	go func() {
 		if err := dhtNode.Start(); err != nil {
 			logger.Fatal("Failed to start DHT node", zap.Error(err))
@@ -95,7 +99,8 @@ func main() {
 
 	logger.Info("Mini-IPFS node is running - press Ctrl+C to stop",
 		zap.String("health_check", fmt.Sprintf("curl http://localhost%s/health", config.Node.HTTPAddr)),
-		zap.String("test_storage", fmt.Sprintf("echo 'hello world' | curl -X POST --data-binary @- http://localhost%s/api/v1/chunk", config.Node.HTTPAddr)),
+		zap.String("store_chunk", fmt.Sprintf("echo 'test data' | curl -X POST --data-binary @- http://localhost%s/api/v1/chunk", config.Node.HTTPAddr)),
+		zap.String("get_chunk_remote", fmt.Sprintf("curl http://localhost%s/api/v1/chunk/{hash}?remote=1", config.Node.HTTPAddr)),
 	)
 
 	// Wait for either server error or shutdown signal

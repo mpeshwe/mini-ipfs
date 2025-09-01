@@ -152,16 +152,306 @@ func (s *RPCServer) handleConnection(conn net.Conn) {
 }
 
 // handleMessage processes a specific RPC message type
+//
+//	func (s *RPCServer) handleMessage(msg *RPCMessage) *RPCMessage {
+//		switch msg.Type {
+//		case MessageTypePing:
+//			return s.handlePing(msg)
+//		case MessageTypeFindNode:
+//			return s.handleFindNode(msg)
+//		default:
+//			s.logger.Warn("Unknown message type", zap.String("type", msg.Type))
+//			return nil
+//		}
+//	}
+//
+// handleMessage processes a specific RPC message type
 func (s *RPCServer) handleMessage(msg *RPCMessage) *RPCMessage {
 	switch msg.Type {
 	case MessageTypePing:
 		return s.handlePing(msg)
 	case MessageTypeFindNode:
 		return s.handleFindNode(msg)
+	case MessageTypeStoreProvider:
+		return s.handleStoreProvider(msg)
+	case MessageTypeFindProviders:
+		return s.handleFindProviders(msg)
 	default:
 		s.logger.Warn("Unknown message type", zap.String("type", msg.Type))
 		return nil
 	}
+}
+
+// handleStoreProvider processes STORE_PROVIDER requests
+// func (s *RPCServer) handleStoreProvider(msg *RPCMessage) *RPCMessage {
+// 	payload, ok := msg.Payload.(map[string]interface{})
+// 	if !ok {
+// 		s.logger.Error("Invalid StoreProvider payload")
+// 		return &RPCMessage{
+// 			Type:   MessageTypeStoreResp,
+// 			ID:     msg.ID,
+// 			Sender: s.node.nodeInfo,
+// 			Payload: StoreResponse{
+// 				Success: false,
+// 				Error:   "Invalid payload",
+// 			},
+// 		}
+// 	}
+
+// 	hashHex, ok := payload["hash"].(string)
+// 	if !ok {
+// 		s.logger.Error("Missing hash in StoreProvider request")
+// 		return &RPCMessage{
+// 			Type:   MessageTypeStoreResp,
+// 			ID:     msg.ID,
+// 			Sender: s.node.nodeInfo,
+// 			Payload: StoreResponse{
+// 				Success: false,
+// 				Error:   "Missing hash",
+// 			},
+// 		}
+// 	}
+
+// 	//providerData, ok := payload["provider"].(map[string]interface{})
+// 	providerHTTP, ok := providerData["http"].(string)
+// 	if !ok {
+// 		s.logger.Error("Missing provider in StoreProvider request")
+// 		return &RPCMessage{
+// 			Type:   MessageTypeStoreResp,
+// 			ID:     msg.ID,
+// 			Sender: s.node.nodeInfo,
+// 			Payload: StoreResponse{
+// 				Success: false,
+// 				Error:   "Missing provider",
+// 			},
+// 		}
+// 	}
+
+// 	// Parse provider info
+// 	providerIdHex, ok := providerData["id"].(string)
+// 	if !ok {
+// 		return &RPCMessage{
+// 			Type:   MessageTypeStoreResp,
+// 			ID:     msg.ID,
+// 			Sender: s.node.nodeInfo,
+// 			Payload: StoreResponse{
+// 				Success: false,
+// 				Error:   "Invalid provider ID",
+// 			},
+// 		}
+// 	}
+
+// 	providerAddr, ok := providerData["addr"].(string)
+// 	if !ok {
+// 		return &RPCMessage{
+// 			Type:   MessageTypeStoreResp,
+// 			ID:     msg.ID,
+// 			Sender: s.node.nodeInfo,
+// 			Payload: StoreResponse{
+// 				Success: false,
+// 				Error:   "Invalid provider address",
+// 			},
+// 		}
+// 	}
+
+// 	// Decode provider ID
+// 	providerId, err := hex.DecodeString(providerIdHex)
+// 	if err != nil {
+// 		return &RPCMessage{
+// 			Type:   MessageTypeStoreResp,
+// 			ID:     msg.ID,
+// 			Sender: s.node.nodeInfo,
+// 			Payload: StoreResponse{
+// 				Success: false,
+// 				Error:   "Invalid provider ID format",
+// 			},
+// 		}
+// 	}
+
+// 	provider := &NodeInfo{
+// 		Id:   providerId,
+// 		Addr: providerAddr,
+// 	}
+
+// 	// Store provider record locally
+// 	s.node.storeProviderLocal(hashHex, provider)
+
+// 	s.logger.Debug("Stored provider record",
+// 		zap.String("hash", hashHex[:16]),
+// 		zap.String("provider", fmt.Sprintf("%x", provider.Id[:8])))
+
+// 	return &RPCMessage{
+// 		Type:   MessageTypeStoreResp,
+// 		ID:     msg.ID,
+// 		Sender: s.node.nodeInfo,
+// 		Payload: StoreResponse{
+// 			Success: true,
+// 		},
+// 	}
+// }
+
+// handleStoreProvider processes STORE_PROVIDER requests
+func (s *RPCServer) handleStoreProvider(msg *RPCMessage) *RPCMessage {
+	payload, ok := msg.Payload.(map[string]interface{})
+	if !ok {
+		s.logger.Error("Invalid StoreProvider payload")
+		return &RPCMessage{
+			Type:    MessageTypeStoreResp,
+			ID:      msg.ID,
+			Sender:  s.node.nodeInfo,
+			Payload: StoreResponse{Success: false, Error: "Invalid payload"},
+		}
+	}
+
+	hashHex, ok := payload["hash"].(string)
+	if !ok {
+		s.logger.Error("Missing hash in StoreProvider request")
+		return &RPCMessage{
+			Type:    MessageTypeStoreResp,
+			ID:      msg.ID,
+			Sender:  s.node.nodeInfo,
+			Payload: StoreResponse{Success: false, Error: "Missing hash"},
+		}
+	}
+
+	providerData, ok := payload["provider"].(map[string]interface{})
+	if !ok {
+		s.logger.Error("Missing provider in StoreProvider request")
+		return &RPCMessage{
+			Type:    MessageTypeStoreResp,
+			ID:      msg.ID,
+			Sender:  s.node.nodeInfo,
+			Payload: StoreResponse{Success: false, Error: "Missing provider"},
+		}
+	}
+
+	// Parse provider info
+	providerIdHex, ok := providerData["id"].(string)
+	if !ok {
+		return &RPCMessage{
+			Type:    MessageTypeStoreResp,
+			ID:      msg.ID,
+			Sender:  s.node.nodeInfo,
+			Payload: StoreResponse{Success: false, Error: "Invalid provider ID"},
+		}
+	}
+
+	providerAddr, ok := providerData["addr"].(string)
+	if !ok {
+		return &RPCMessage{
+			Type:    MessageTypeStoreResp,
+			ID:      msg.ID,
+			Sender:  s.node.nodeInfo,
+			Payload: StoreResponse{Success: false, Error: "Invalid provider address"},
+		}
+	}
+
+	// NEW: optional HTTP address (host:port for HTTP API)
+	providerHTTP, _ := providerData["http"].(string)
+
+	// Decode provider ID
+	providerId, err := hex.DecodeString(providerIdHex)
+	if err != nil {
+		return &RPCMessage{
+			Type:    MessageTypeStoreResp,
+			ID:      msg.ID,
+			Sender:  s.node.nodeInfo,
+			Payload: StoreResponse{Success: false, Error: "Invalid provider ID format"},
+		}
+	}
+
+	provider := &NodeInfo{
+		Id:   providerId,
+		Addr: providerAddr,
+		HTTP: providerHTTP, // keep the advertised HTTP address if present
+	}
+
+	// Store provider record locally
+	s.node.storeProviderLocal(hashHex, provider)
+
+	s.logger.Debug("Stored provider record",
+		zap.String("hash", hashHex[:16]),
+		zap.String("provider", fmt.Sprintf("%x", provider.Id[:8])),
+		zap.String("http", provider.HTTP))
+
+	return &RPCMessage{
+		Type:    MessageTypeStoreResp,
+		ID:      msg.ID,
+		Sender:  s.node.nodeInfo,
+		Payload: StoreResponse{Success: true},
+	}
+}
+
+// handleFindProviders processes FIND_PROVIDERS requests
+// func (s *RPCServer) handleFindProviders(msg *RPCMessage) *RPCMessage {
+// 	payload, ok := msg.Payload.(map[string]interface{})
+// 	if !ok {
+// 		s.logger.Error("Invalid FindProviders payload")
+// 		return nil
+// 	}
+
+// 	hashHex, ok := payload["hash"].(string)
+// 	if !ok {
+// 		s.logger.Error("Missing hash in FindProviders request")
+// 		return nil
+// 	}
+
+// 	// Get local providers for this hash
+// 	s.node.providersMux.RLock()
+// 	providers := make([]*NodeInfo, len(s.node.providers[hashHex]))
+// 	copy(providers, s.node.providers[hashHex])
+// 	s.node.providersMux.RUnlock()
+
+// 	s.logger.Debug("Returning providers",
+// 		zap.String("hash", hashHex[:16]),
+// 		zap.Int("provider_count", len(providers)))
+
+//		return &RPCMessage{
+//			Type:   MessageTypeProvidersResp,
+//			ID:     msg.ID,
+//			Sender: s.node.nodeInfo,
+//			Payload: ProvidersResponse{
+//				Providers: providers,
+//			},
+//		}
+//	}
+func (s *RPCServer) handleFindProviders(msg *RPCMessage) *RPCMessage {
+    // Parse and validate payload
+    payload, ok := msg.Payload.(map[string]interface{})
+    if !ok {
+        s.logger.Error("Invalid FindProviders payload")
+        return &RPCMessage{
+            Type:   MessageTypeProvidersResp,
+            ID:     msg.ID,
+            Sender: s.node.nodeInfo,
+            Payload: ProvidersResponse{
+                Providers: []*NodeInfo{},
+            },
+        }
+    }
+
+    hashHex, ok := payload["hash"].(string)
+    if !ok || len(hashHex) == 0 {
+        s.logger.Error("Missing or invalid hash in FindProviders request")
+        return &RPCMessage{
+            Type:   MessageTypeProvidersResp,
+            ID:     msg.ID,
+            Sender: s.node.nodeInfo,
+            Payload: ProvidersResponse{
+                Providers: []*NodeInfo{},
+            },
+        }
+    }
+
+    // Get local providers for this hash
+    providers := s.node.loadProviders(hashHex)
+
+    return &RPCMessage{
+        Type:   MessageTypeProvidersResp,
+        ID:     msg.ID,
+        Sender: s.node.nodeInfo,
+        Payload: ProvidersResponse{Providers: providers},
+    }
 }
 
 // handlePing responds to ping requests

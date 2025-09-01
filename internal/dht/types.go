@@ -20,34 +20,40 @@ var (
 )
 
 // NodeInfo represents a node in the DHT network
+
 type NodeInfo struct {
-	Id   []byte `json:"id"`   // 32-byte SHA-256 hash
-	Addr string `json:"addr"` // Network address like "192.168.1.1:7000"
+	Id   []byte `json:"id"`   // peer id bytes or hash
+	Addr string `json:"addr"` // DHT dial address "host:7000"
+	HTTP string `json:"http"` // HTTP fetch address "host:8080"
 }
 
-// MarshalJSON customizes JSON encoding for NodeInfo
 func (n *NodeInfo) MarshalJSON() ([]byte, error) {
-	return []byte(`{"id":"` + hex.EncodeToString(n.Id) + `","addr":"` + n.Addr + `"}`), nil
-}
-
-// UnmarshalJSON customizes JSON decoding for NodeInfo
-func (n *NodeInfo) UnmarshalJSON(data []byte) error {
-	var temp struct {
+	type alias struct {
 		Id   string `json:"id"`
 		Addr string `json:"addr"`
+		HTTP string `json:"http,omitempty"`
 	}
+	return json.Marshal(alias{
+		Id:   hex.EncodeToString(n.Id),
+		Addr: n.Addr,
+		HTTP: n.HTTP,
+	})
+}
 
-	if err := json.Unmarshal(data, &temp); err != nil {
+func (n *NodeInfo) UnmarshalJSON(b []byte) error {
+	var a struct {
+		Id   string `json:"id"`
+		Addr string `json:"addr"`
+		HTTP string `json:"http"`
+	}
+	if err := json.Unmarshal(b, &a); err != nil {
 		return err
 	}
-
-	id, err := hex.DecodeString(temp.Id)
+	id, err := hex.DecodeString(a.Id)
 	if err != nil {
 		return err
 	}
-
-	n.Id = id
-	n.Addr = temp.Addr
+	n.Id, n.Addr, n.HTTP = id, a.Addr, a.HTTP
 	return nil
 }
 
